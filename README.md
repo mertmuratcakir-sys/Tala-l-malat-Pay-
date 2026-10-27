@@ -1,1 +1,16 @@
-# Tala-l-malat-Pay-
+# cnc-simulator
+
+Gradio uygulaması (Render'da çalışacak şekilde ipynb'den dönüştürüldü).
+
+## Yerelde çalıştırma
+```
+pip install -r requirements.txt
+python app.py
+```
+
+## Render'a yükleme
+1. Bu klasörü GitHub'a yükle.
+2. Render → New → Web Service → repoyu seç.
+3. Build Command: `pip install -r requirements.txt`  |  Start Command: `python app.py`
+   (veya New → Blueprint ile `render.yaml` kullan).
+4. Environment sekmesinde `APP_USER` ve `APP_PASSWORD` değişkenlerini tanımla (sayfa açılırken bu kullanıcı adı/şifre istenir).
