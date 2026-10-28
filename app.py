@@ -4,6 +4,11 @@ Colab'a ozel hicbir kod icermez (google.colab, files.upload/download yok).
 """
 import os
 
+# Şifre koruması: Render > Environment bölümünden APP_USER ve APP_PASSWORD tanımla
+APP_USER = os.environ.get("APP_USER")
+APP_PASSWORD = os.environ.get("APP_PASSWORD")
+if not APP_USER or not APP_PASSWORD:
+    raise RuntimeError("APP_USER ve APP_PASSWORD ortam değişkenleri tanımlı değil")
 import re
 import numpy as np
 
@@ -843,10 +848,4 @@ with gr.Blocks(title="Talasli Imalat Payi Kontrolu") as demo:
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 7860))
-    # Giris sifresi: Render'da Environment sekmesinden APP_USERNAME ve
-    # APP_PASSWORD degiskenlerini tanimlayin. Tanimlanmazsa asagidaki
-    # varsayilanlar kullanilir -- guvenlik icin mutlaka degistirin.
-    app_user = os.environ.get('APP_USERNAME', 'admin')
-    app_pass = os.environ.get('APP_PASSWORD', 'degistir123')
-    demo.launch(server_name='0.0.0.0', server_port=port,
-                auth=(app_user, app_pass))
+
