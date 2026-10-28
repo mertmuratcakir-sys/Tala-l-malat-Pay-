@@ -843,4 +843,10 @@ with gr.Blocks(title="Talasli Imalat Payi Kontrolu") as demo:
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 7860))
-    demo.launch(server_name='0.0.0.0', server_port=port)
+    # Giris sifresi: Render'da Environment sekmesinden APP_USERNAME ve
+    # APP_PASSWORD degiskenlerini tanimlayin. Tanimlanmazsa asagidaki
+    # varsayilanlar kullanilir -- guvenlik icin mutlaka degistirin.
+    app_user = os.environ.get('APP_USERNAME', 'admin')
+    app_pass = os.environ.get('APP_PASSWORD', 'degistir123')
+    demo.launch(server_name='0.0.0.0', server_port=port,
+                auth=(app_user, app_pass))
