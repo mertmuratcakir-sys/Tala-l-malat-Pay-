@@ -407,7 +407,8 @@ def _colored_line(ax, pts, colors, cmap='YlOrRd', vmin=0, vmax=15, lw=2.0):
     return lc
 
 def plot_critical_lines(scan_segments, contour_segments, payi_esik_mm,
-                         title="Talasli imalat payi"):
+                         title="Talasli imalat payi", contour_label='Islenmis parca',
+                         crit_word='Pay', ref_short='islenmis'):
     """scan_segments: list of Nx2 arrays (already transformed to the DXF
     plane), one per scan pass/branch.
     contour_segments: list of Nx2 arrays, one per DXF entity."""
@@ -417,7 +418,7 @@ def plot_critical_lines(scan_segments, contour_segments, payi_esik_mm,
     fig, ax = plt.subplots(figsize=(9, 9))
     for seg in contour_segments:
         ax.plot(seg[:, 0], seg[:, 1], '-', color='#9ca3af', linewidth=1.2, alpha=0.7)
-    ax.plot([], [], '-', color='#9ca3af', linewidth=1.2, label='Islenmis parca')
+    ax.plot([], [], '-', color='#9ca3af', linewidth=1.2, label=contour_label)
 
     all_d = []
     crit_points = []
@@ -435,7 +436,7 @@ def plot_critical_lines(scan_segments, contour_segments, payi_esik_mm,
         cbar = plt.colorbar(lc_ref, ax=ax)
         cbar.set_label('Mesafe (mm)')
     ax.plot([], [], '-', color='red', linewidth=2,
-            label=f'Pay < {payi_esik_mm:.1f}mm (kritik)')
+            label=f'{crit_word} < {payi_esik_mm:.1f}mm (kritik)')
 
     all_d_flat = np.concatenate(all_d) if all_d else np.array([])
 
@@ -468,7 +469,7 @@ def plot_critical_lines(scan_segments, contour_segments, payi_esik_mm,
     if len(all_scan_pts):
         min_y_scan = all_scan_pts[:, 1].min()
         alt_uc_fark = min_y_scan - min_y_contour
-        ax.text(0.02, 0.02, f'Alt uc farki (tarama - islenmis): {alt_uc_fark:+.2f} mm',
+        ax.text(0.02, 0.02, f'Alt uc farki (tarama - {ref_short}): {alt_uc_fark:+.2f} mm',
                 transform=ax.transAxes, fontsize=9, color='black',
                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     else:
@@ -484,11 +485,15 @@ def plot_critical_lines(scan_segments, contour_segments, payi_esik_mm,
 
 import numpy as np
 
-def export_result_dxf_lines(path, scan_segments, contour_segments, payi_esik_mm, extra_texts=None):
+def export_result_dxf_lines(path, scan_segments, contour_segments, payi_esik_mm, extra_texts=None, layers=None):
     """Write a genuinely R12 (AC1009) compatible DXF -- uses classic
     POLYLINE/VERTEX/SEQEND. This is the most broadly compatible
     combination (tested working in AutoCAD 2026)."""
     from scipy.spatial import cKDTree
+    L = {'contour': 'ISLENMIS_PARCA', 'ok': 'PAY_YETERLI', 'crit': 'PAY_KRITIK',
+         'label': 'PAY_ETIKET', 'info': 'OLCUM_BILGISI'}
+    if layers:
+        L.update(layers)
     all_contour_pts = np.vstack(contour_segments)
     tree = cKDTree(all_contour_pts)
 
@@ -511,7 +516,7 @@ def export_result_dxf_lines(path, scan_segments, contour_segments, payi_esik_mm,
         ent.append(f"0\nTEXT\n8\n{layer}\n62\n{color}\n10\n{x:.4f}\n20\n{y:.4f}\n30\n0.0\n40\n{height}\n1\n{txt}")
 
     for seg in contour_segments:
-        add_polyline(seg, 8, "ISLENMIS_PARCA")
+        add_polyline(seg, 8, L['contour'])
 
     for seg in scan_segments:
         d, _ = tree.query(seg)
@@ -531,9 +536,9 @@ def export_result_dxf_lines(path, scan_segments, contour_segments, payi_esik_mm,
             yield cur
 
         for run in runs(ok):
-            add_polyline(seg[run], 2, "PAY_YETERLI")
+            add_polyline(seg[run], 2, L['ok'])
         for run in runs(~ok):
-            add_polyline(seg[run], 1, "PAY_KRITIK")
+            add_polyline(seg[run], 1, L['crit'])
 
         idx = np.where(d < payi_esik_mm)[0]
         if len(idx) > 0:
@@ -549,12 +554,12 @@ def export_result_dxf_lines(path, scan_segments, contour_segments, payi_esik_mm,
             for cl in clusters:
                 cl = np.array(cl)
                 mi = cl[np.argmin(d[cl])]
-                add_text(seg[mi, 0] + 5, seg[mi, 1], f"{d[mi]:.2f}mm", 1, "PAY_ETIKET", 5.0)
+                add_text(seg[mi, 0] + 5, seg[mi, 1], f"{d[mi]:.2f}mm", 1, L['label'], 5.0)
 
     if extra_texts:
         # alt uc farki gibi ek bilgi metinleri (ayri katman)
         for x, y, txt in extra_texts:
-            add_text(x, y, txt, 3, "OLCUM_BILGISI", 6.0)
+            add_text(x, y, txt, 3, L['info'], 6.0)
 
     ent.append("0\nENDSEC")
     lines.append("\n".join(ent))
@@ -564,7 +569,9 @@ def export_result_dxf_lines(path, scan_segments, contour_segments, payi_esik_mm,
         f.write("\n".join(lines))
     return path
 
-def _build_combined(scn3_state, scn9_state, scn12_state, payi_esik_mm, common_dy, contour_segments):
+def _build_combined(scn3_state, scn9_state, scn12_state, payi_esik_mm, common_dy, contour_segments,
+                    contour_label='Islenmis parca', crit_word='Pay',
+                    title_text='Birlestirilmis: SCN3 (sol) / SCN9+SCN12 (sag)'):
     tree = cKDTree(np.vstack(contour_segments))
 
     def with_common_y(state, take_slice):
@@ -581,7 +588,7 @@ def _build_combined(scn3_state, scn9_state, scn12_state, payi_esik_mm, common_dy
     fig, ax = plt.subplots(figsize=(9, 9))
     for seg in contour_segments:
         ax.plot(seg[:, 0], seg[:, 1], '-', color='#9ca3af', linewidth=1.2, alpha=0.7)
-    ax.plot([], [], '-', color='#9ca3af', linewidth=1.2, label='Islenmis parca')
+    ax.plot([], [], '-', color='#9ca3af', linewidth=1.2, label=contour_label)
 
     all_d = []
     lc_ref = None
@@ -647,7 +654,7 @@ def _build_combined(scn3_state, scn9_state, scn12_state, payi_esik_mm, common_dy
                         fontsize=8, color='darkred', fontweight='bold')
 
     ax.plot([], [], '-', color='red', linewidth=2,
-            label=f'Pay < {payi_esik_mm:.1f}mm (kritik)')
+            label=f'{crit_word} < {payi_esik_mm:.1f}mm (kritik)')
 
     all_d_flat = np.concatenate(all_d) if all_d else np.array([])
     min_y_contour = np.vstack(contour_segments)[:, 1].min()
@@ -663,7 +670,7 @@ def _build_combined(scn3_state, scn9_state, scn12_state, payi_esik_mm, common_dy
 
     ax.set_xlabel('X (mm)'); ax.set_ylabel('Y (mm)')
     med = np.median(all_d_flat) if len(all_d_flat) else float('nan')
-    ax.set_title(f'Birlestirilmis: SCN3 (sol) / SCN9+SCN12 (sag) -- medyan {med:.2f}mm')
+    ax.set_title(f'{title_text} -- medyan {med:.2f}mm')
     ax.legend(loc='upper right', fontsize=8)
     ax.set_aspect('equal'); ax.grid(alpha=0.3)
     plt.tight_layout()
@@ -673,6 +680,26 @@ PAYI_ESIK_MM = 3.0
 
 import gradio as gr
 
+# Iki kontrol modu: ayni mantik, farkli DXF ve etiketler.
+MODES = {
+    'pay': dict(
+        tab='Talasli Imalat Payi', title='talasli imalat payi',
+        contour_label='Islenmis parca', crit_word='Pay', ref_short='islenmis',
+        dxf_label='Islenmis parca DXF dosyasi', median_word='Medyan sapma',
+        thr_label='Payi esigi (mm)', file_prefix='', file_stem='talasli_imalat_payi',
+        combined_title='Birlestirilmis: SCN3 (sol) / SCN9+SCN12 (sag)',
+        combined_file='SCN3_SCN9_SCN12_birlestirilmis.dxf', layers=None),
+    'cnc': dict(
+        tab='CNC Calisma Alani', title='CNC calisma alani kontrolu',
+        contour_label='CNC calisma alani', crit_word='Bosluk', ref_short='CNC alani',
+        dxf_label='CNC calisma alani DXF dosyasi', median_word='Medyan mesafe',
+        thr_label='Bosluk esigi (mm)', file_prefix='CNC_', file_stem='calisma_alani',
+        combined_title='CNC alani -- Birlestirilmis: SCN3 (sol) / SCN9+SCN12 (sag)',
+        combined_file='CNC_SCN3_SCN9_SCN12_birlestirilmis.dxf',
+        layers=dict(contour='CNC_ALAN', ok='BOSLUK_YETERLI', crit='BOSLUK_KRITIK',
+                    label='BOSLUK_ETIKET', info='OLCUM_BILGISI')),
+}
+
 # Gradio arayuzunun kendi ici durumu (pipeline calisinca doldurulur)
 G = {}
 
@@ -680,11 +707,21 @@ CIRCLE_CENTER_POINT_G = np.array([1.18951836e-11, -1.24282270e+01, -1.58220266e-
 MARKED_CENTER_POINT_G = np.array([0.0099490363, 0.0, 1.6565055471])
 
 
-def gr_run_pipeline(dxf_file, igs_file, payi_default):
-    if dxf_file is None or igs_file is None:
-        return "Lutfen hem DXF hem IGS dosyasini yukleyin."
-    dxf_path_g = dxf_file.name
-    igs_path_g = igs_file.name
+def _path(f):
+    """gr.File degeri: Gradio surumune gore str ya da .name'li nesne olabilir."""
+    if f is None:
+        return None
+    return getattr(f, 'name', f)
+
+
+def gr_run_pipeline(dxf_file, igs_file, cnc_file, payi_default):
+    igs_path_g = _path(igs_file)
+    dxf_path_g = _path(dxf_file)
+    cnc_path_g = _path(cnc_file)
+    if igs_path_g is None:
+        return "Lutfen IGS (tarama) dosyasini yukleyin."
+    if dxf_path_g is None and cnc_path_g is None:
+        return "En az bir DXF yukleyin (islenmis parca ve/veya CNC calisma alani)."
 
     curves_g = parse_iges_scan_curves(igs_path_g)
     scan_groups_g = group_curves_by_scan(curves_g)
@@ -696,23 +733,31 @@ def gr_run_pipeline(dxf_file, igs_file, payi_default):
     perp_c = rel_c - t_comp_c * d_opt_g
     A_opt_g = A_opt_g + perp_c
 
-    midline_segments_3d_g = build_midline_segments(curves_g)
-    contour_segments_g = sample_dxf_contour_segments(dxf_path_g)
-
     t_sign_g = -1
     tr_marked = project_axial_radial(MARKED_CENTER_POINT_G.reshape(1, 3), A_opt_g, d_opt_g)
     t_off_g = -(tr_marked[0, 0] * t_sign_g)
-    Xc_g = 0.0
+
+    modes_data = {}
+    for key, p in (('pay', dxf_path_g), ('cnc', cnc_path_g)):
+        modes_data[key] = {
+            'contour_segments': sample_dxf_contour_segments(p) if p else None,
+            'states': {}, 'combined': None}
 
     G.clear()
     G.update(dict(curves=curves_g, A_opt=A_opt_g, d_opt=d_opt_g,
-                  contour_segments=contour_segments_g, t_sign=t_sign_g,
-                  t_off=t_off_g, Xc=Xc_g, states={}, payi_default=payi_default))
+                  t_sign=t_sign_g, t_off=t_off_g, Xc=0.0,
+                  modes=modes_data, payi_default=payi_default))
 
-    contour_xy = np.vstack(contour_segments_g)
-    return (f"Pipeline tamam. {len(curves_g)} tarama egrisi, "
-            f"{len(contour_segments_g)} DXF cizgi parcasi okundu.\n"
-            f"DXF Y araligi: {contour_xy[:,1].min():.1f} - {contour_xy[:,1].max():.1f}")
+    lines = [f"Pipeline tamam. {len(curves_g)} tarama egrisi okundu."]
+    for key in ('pay', 'cnc'):
+        cs = modes_data[key]['contour_segments']
+        if cs is None:
+            lines.append(f"{MODES[key]['tab']}: DXF yuklenmedi (bu bolum kullanilamaz).")
+        else:
+            xy = np.vstack(cs)
+            lines.append(f"{MODES[key]['tab']}: {len(cs)} cizgi parcasi, "
+                         f"Y araligi {xy[:, 1].min():.1f} - {xy[:, 1].max():.1f}")
+    return "\n".join(lines)
 
 
 def gr_get_scan_base_segments(scn):
@@ -730,58 +775,84 @@ def gr_get_scan_base_segments(scn):
     return segs
 
 
-def gr_draw_scan(scn, dx, dy, dr, payi):
+def _mode_ready(mode):
     if 'curves' not in G:
         return None, "Once 'Pipeline'i Calistir' butonuna basin."
+    M = G['modes'][mode]
+    if M['contour_segments'] is None:
+        return None, f"Once {MODES[mode]['dxf_label']} yukleyip Pipeline'i Calistirin."
+    return M, None
+
+
+def gr_draw_scan(mode, scn, dx, dy, dr, thr):
+    M, err = _mode_ready(mode)
+    if err:
+        return None, err
+    cfg = MODES[mode]
     base = gr_get_scan_base_segments(scn)
     segs = [xy + np.array([dx + sign * dr, dy]) for xy, sign in base]
     fig, d_all, ax = plot_critical_lines(
-        segs, G['contour_segments'], payi,
-        title=f"{scn} -- talasli imalat payi (x={dx:+.2f}, y={dy:+.2f}, r={dr:+.2f})")
-    min_y_c = np.vstack(G['contour_segments'])[:, 1].min()
+        segs, M['contour_segments'], thr,
+        title=f"{scn} -- {cfg['title']} (x={dx:+.2f}, y={dy:+.2f}, r={dr:+.2f})",
+        contour_label=cfg['contour_label'], crit_word=cfg['crit_word'],
+        ref_short=cfg['ref_short'])
+    min_y_c = np.vstack(M['contour_segments'])[:, 1].min()
     min_y_s = np.vstack(segs)[:, 1].min()
     alt_uc = min_y_s - min_y_c
-    G['states'][scn] = {'segments': segs, 'd_all': d_all, 'payi': payi,
-                         'dx': dx, 'dy': dy, 'dr': dr, 'alt_uc_farki': alt_uc}
-    info = (f"Medyan sapma: {np.median(d_all):.2f} mm\n"
-             f"{payi}mm esiginin altinda: {int((d_all < payi).sum())} / {len(d_all)} nokta\n"
-             f"Alt uc farki (tarama-islenmis): {alt_uc:+.2f} mm")
+    M['states'][scn] = {'segments': segs, 'd_all': d_all, 'payi': thr,
+                        'dx': dx, 'dy': dy, 'dr': dr, 'alt_uc_farki': alt_uc}
+    info = (f"{cfg['median_word']}: {np.median(d_all):.2f} mm\n"
+            f"{thr}mm esiginin altinda: {int((d_all < thr).sum())} / {len(d_all)} nokta\n"
+            f"Alt uc farki (tarama-{cfg['ref_short']}): {alt_uc:+.2f} mm")
     return fig, info
 
 
-def gr_download_scan(scn):
-    st = G.get('states', {}).get(scn)
+def gr_download_scan(mode, scn):
+    if 'curves' not in G:
+        return None
+    M = G['modes'][mode]
+    st = M['states'].get(scn)
     if st is None:
         return None
-    out_path = f"/tmp/{scn}_talasli_imalat_payi.dxf"
+    cfg = MODES[mode]
+    out_path = f"/tmp/{cfg['file_prefix']}{scn}_{cfg['file_stem']}.dxf"
     all_pts = np.vstack(st['segments'])
     min_i = np.argmin(all_pts[:, 1])
     extra_texts = [(all_pts[min_i, 0] + 8, all_pts[min_i, 1],
-                     f"Alt uc farki: {st['alt_uc_farki']:+.2f}mm")]
-    export_result_dxf_lines(out_path, st['segments'], G['contour_segments'],
-                              st['payi'], extra_texts=extra_texts)
+                    f"Alt uc farki: {st['alt_uc_farki']:+.2f}mm")]
+    export_result_dxf_lines(out_path, st['segments'], M['contour_segments'],
+                            st['payi'], extra_texts=extra_texts, layers=cfg['layers'])
     return out_path
 
 
-def gr_draw_combined(common_dy, payi):
-    missing = [s for s in ['SCN3', 'SCN9', 'SCN12'] if s not in G.get('states', {})]
+def gr_draw_combined(mode, common_dy, thr):
+    M, err = _mode_ready(mode)
+    if err:
+        return None, err
+    cfg = MODES[mode]
+    missing = [s for s in ['SCN3', 'SCN9', 'SCN12'] if s not in M['states']]
     if missing:
         return None, f"Once su panelleri bir kez cizin: {', '.join(missing)}"
     fig, d_all, segs, alt_uc = _build_combined(
-        G['states']['SCN3'], G['states']['SCN9'], G['states']['SCN12'], payi, common_dy,
-        G['contour_segments'])
-    G['combined'] = {'segments': segs, 'd_all': d_all, 'payi': payi, 'alt_uc': alt_uc}
-    info = (f"Medyan sapma: {np.median(d_all):.2f} mm\n"
-             f"{payi}mm esiginin altinda: {int((d_all < payi).sum())} / {len(d_all)} nokta\n" +
-             "\n".join(f"{k} alt uc farki: {v:+.2f} mm" for k, v in alt_uc.items()))
+        M['states']['SCN3'], M['states']['SCN9'], M['states']['SCN12'], thr, common_dy,
+        M['contour_segments'], contour_label=cfg['contour_label'],
+        crit_word=cfg['crit_word'], title_text=cfg['combined_title'])
+    M['combined'] = {'segments': segs, 'd_all': d_all, 'payi': thr, 'alt_uc': alt_uc}
+    info = (f"{cfg['median_word']}: {np.median(d_all):.2f} mm\n"
+            f"{thr}mm esiginin altinda: {int((d_all < thr).sum())} / {len(d_all)} nokta\n" +
+            "\n".join(f"{k} alt uc farki: {v:+.2f} mm" for k, v in alt_uc.items()))
     return fig, info
 
 
-def gr_download_combined():
-    st = G.get('combined')
+def gr_download_combined(mode):
+    if 'curves' not in G:
+        return None
+    M = G['modes'][mode]
+    st = M.get('combined')
     if st is None:
         return None
-    out_path = "/tmp/SCN3_SCN9_SCN12_birlestirilmis.dxf"
+    cfg = MODES[mode]
+    out_path = f"/tmp/{cfg['combined_file']}"
     all_pts = np.vstack(st['segments'])
     x_span = all_pts[:, 0].max() - all_pts[:, 0].min()
     extra_texts = []
@@ -789,57 +860,72 @@ def gr_download_combined():
         px = all_pts[:, 0].min() + x_span * 0.1 + i * x_span * 0.3
         py = all_pts[:, 1].min() - 10
         extra_texts.append((px, py, f"{k} alt uc farki: {v:+.2f}mm"))
-    export_result_dxf_lines(out_path, st['segments'], G['contour_segments'],
-                              st['payi'], extra_texts=extra_texts)
+    export_result_dxf_lines(out_path, st['segments'], M['contour_segments'],
+                            st['payi'], extra_texts=extra_texts, layers=cfg['layers'])
     return out_path
 
 
-def _make_scan_tab(scn):
+def _make_scan_tab(mode, scn):
+    cfg = MODES[mode]
     with gr.Tab(scn):
         with gr.Row():
             dx = gr.Number(value=0.0, label="X kaydirma (mm)")
             dy = gr.Number(value=-3.0, label="Y kaydirma (mm)")
             dr = gr.Number(value=0.0, label="R kaydirma (yaricap, mm)")
-            payi = gr.Number(value=PAYI_ESIK_MM, label="Payi esigi (mm)")
+            thr = gr.Number(value=PAYI_ESIK_MM, label=cfg['thr_label'])
         draw_btn = gr.Button("Ciz / Guncelle", variant="primary")
         plot_out = gr.Plot()
         info_out = gr.Textbox(label="Sonuc", interactive=False, lines=3)
         dl_btn = gr.Button("DXF olarak indir")
         dl_file = gr.File(label="Indirilecek dosya")
 
-        draw_btn.click(lambda dx, dy, dr, payi, scn=scn: gr_draw_scan(scn, dx, dy, dr, payi),
-                        inputs=[dx, dy, dr, payi], outputs=[plot_out, info_out])
-        dl_btn.click(lambda scn=scn: gr_download_scan(scn), inputs=[], outputs=dl_file)
+        draw_btn.click(
+            lambda dx, dy, dr, thr, mode=mode, scn=scn: gr_draw_scan(mode, scn, dx, dy, dr, thr),
+            inputs=[dx, dy, dr, thr], outputs=[plot_out, info_out])
+        dl_btn.click(lambda mode=mode, scn=scn: gr_download_scan(mode, scn),
+                     inputs=[], outputs=dl_file)
 
 
-with gr.Blocks(title="Talasli Imalat Payi Kontrolu") as demo:
-    gr.Markdown("# Talasli Imalat Payi Kontrolu")
-    with gr.Row():
-        dxf_file_in = gr.File(label="Islenmis parca DXF dosyasi")
-        igs_file_in = gr.File(label="Tarama IGS dosyasi")
-        payi0 = gr.Number(value=PAYI_ESIK_MM, label="Varsayilan payi esigi (mm)")
-    run_btn = gr.Button("Pipeline'i Calistir", variant="primary")
-    status = gr.Textbox(label="Durum", interactive=False, lines=3)
-    run_btn.click(gr_run_pipeline, inputs=[dxf_file_in, igs_file_in, payi0], outputs=status)
-
+def _make_mode_ui(mode):
+    cfg = MODES[mode]
     with gr.Tabs():
-        _make_scan_tab('SCN12')
-        _make_scan_tab('SCN3')
-        _make_scan_tab('SCN9')
+        for scn in ['SCN12', 'SCN3', 'SCN9']:
+            _make_scan_tab(mode, scn)
 
         with gr.Tab("Birlestirilmis"):
             with gr.Row():
                 common_dy = gr.Number(value=-3.0, label="Y kaydirma (mm, hepsi)")
-                payi_c = gr.Number(value=PAYI_ESIK_MM, label="Payi esigi (mm)")
+                thr_c = gr.Number(value=PAYI_ESIK_MM, label=cfg['thr_label'])
             draw_btn_c = gr.Button("Guncelle", variant="primary")
             plot_out_c = gr.Plot()
             info_out_c = gr.Textbox(label="Sonuc", interactive=False, lines=4)
             dl_btn_c = gr.Button("DXF olarak indir")
             dl_file_c = gr.File(label="Indirilecek dosya")
 
-            draw_btn_c.click(gr_draw_combined, inputs=[common_dy, payi_c],
-                              outputs=[plot_out_c, info_out_c])
-            dl_btn_c.click(gr_download_combined, inputs=[], outputs=dl_file_c)
+            draw_btn_c.click(
+                lambda cdy, thr, mode=mode: gr_draw_combined(mode, cdy, thr),
+                inputs=[common_dy, thr_c], outputs=[plot_out_c, info_out_c])
+            dl_btn_c.click(lambda mode=mode: gr_download_combined(mode),
+                           inputs=[], outputs=dl_file_c)
+
+
+with gr.Blocks(title="Talasli Imalat Payi ve CNC Alan Kontrolu") as demo:
+    gr.Markdown("# Talasli Imalat Payi ve CNC Calisma Alani Kontrolu")
+    with gr.Row():
+        dxf_file_in = gr.File(label=MODES['pay']['dxf_label'])
+        cnc_file_in = gr.File(label=MODES['cnc']['dxf_label'] + " (istege bagli)")
+        igs_file_in = gr.File(label="Tarama IGS dosyasi")
+        payi0 = gr.Number(value=PAYI_ESIK_MM, label="Varsayilan esik (mm)")
+    run_btn = gr.Button("Pipeline'i Calistir", variant="primary")
+    status = gr.Textbox(label="Durum", interactive=False, lines=4)
+    run_btn.click(gr_run_pipeline,
+                  inputs=[dxf_file_in, igs_file_in, cnc_file_in, payi0], outputs=status)
+
+    with gr.Tabs():
+        with gr.Tab(MODES['pay']['tab']):
+            _make_mode_ui('pay')
+        with gr.Tab(MODES['cnc']['tab']):
+            _make_mode_ui('cnc')
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 7860))
