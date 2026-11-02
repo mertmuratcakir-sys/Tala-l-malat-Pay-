@@ -394,6 +394,51 @@ import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 from scipy.spatial import cKDTree
 
+def make_dist_fn(contour_segments, signed=False):
+    """Tarama noktalarinin DXF konturuna mesafesini veren fonksiyon dondurur.
+    signed=False : en yakin kontur ornek noktasina mesafe (talasli imalat payi).
+    signed=True  : kenara tam nokta-dogru parcasi mesafesi; kontur ICINDE ise
+                   pozitif, DISINDA ise negatif (CNC calisma alani)."""
+    if not signed:
+        tree = cKDTree(np.vstack(contour_segments))
+        return lambda pts: tree.query(pts)[0]
+
+    a_list, b_list = [], []
+    for seg in contour_segments:
+        if len(seg) >= 2:
+            a_list.append(seg[:-1]); b_list.append(seg[1:])
+    A = np.vstack(a_list); B = np.vstack(b_list)
+    keep = np.hypot(*(B - A).T) > 1e-9           # sifir uzunluklu kenarlari at
+    A, B = A[keep], B[keep]
+    # ayni kenari iki kez saymamak icin tekillestir (ters yonlu olanlar dahil)
+    key = np.round(np.hstack([np.minimum(A, B), np.maximum(A, B)]), 4)
+    _, uidx = np.unique(key, axis=0, return_index=True)
+    A, B = A[uidx], B[uidx]
+    AB = B - A
+    L2 = (AB ** 2).sum(axis=1)
+
+    def fn(pts):
+        pts = np.asarray(pts, dtype=float)
+        out = np.empty(len(pts))
+        chunk = max(1, int(3_000_000 // max(1, len(A))))
+        for s0 in range(0, len(pts), chunk):
+            P = pts[s0:s0 + chunk]
+            px = P[:, 0:1]; py = P[:, 1:2]
+            t = ((px - A[:, 0]) * AB[:, 0] + (py - A[:, 1]) * AB[:, 1]) / L2
+            t = np.clip(t, 0.0, 1.0)
+            dx = px - (A[:, 0] + t * AB[:, 0])
+            dy = py - (A[:, 1] + t * AB[:, 1])
+            dist = np.sqrt(dx * dx + dy * dy).min(axis=1)
+            # even-odd isin testi (+X yonunde)
+            c1 = (A[:, 1] > py) != (B[:, 1] > py)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                xi = A[:, 0] + (py - A[:, 1]) * AB[:, 0] / (B[:, 1] - A[:, 1])
+            inside = ((c1 & (xi > px)).sum(axis=1) % 2) == 1
+            out[s0:s0 + chunk] = np.where(inside, dist, -dist)
+        return out
+    return fn
+
+
 def _colored_line(ax, pts, colors, cmap='YlOrRd', vmin=0, vmax=15, lw=2.0):
     """Draw a single connected line whose color varies point-to-point."""
     if len(pts) < 2:
@@ -408,12 +453,14 @@ def _colored_line(ax, pts, colors, cmap='YlOrRd', vmin=0, vmax=15, lw=2.0):
 
 def plot_critical_lines(scan_segments, contour_segments, payi_esik_mm,
                          title="Talasli imalat payi", contour_label='Islenmis parca',
-                         crit_word='Pay', ref_short='islenmis'):
+                         crit_word='Pay', ref_short='islenmis', signed=False):
     """scan_segments: list of Nx2 arrays (already transformed to the DXF
     plane), one per scan pass/branch.
     contour_segments: list of Nx2 arrays, one per DXF entity."""
     all_contour_pts = np.vstack(contour_segments)
-    tree = cKDTree(all_contour_pts)
+    dist = make_dist_fn(contour_segments, signed)
+    d_per_seg = [dist(seg) for seg in scan_segments]
+    vmin = min(0.0, min((d.min() for d in d_per_seg), default=0.0)) if signed else 0
 
     fig, ax = plt.subplots(figsize=(9, 9))
     for seg in contour_segments:
@@ -423,10 +470,9 @@ def plot_critical_lines(scan_segments, contour_segments, payi_esik_mm,
     all_d = []
     crit_points = []
     lc_ref = None
-    for seg in scan_segments:
-        d, _ = tree.query(seg)
+    for seg, d in zip(scan_segments, d_per_seg):
         all_d.append(d)
-        lc_ref = _colored_line(ax, seg, d, vmax=max(15, payi_esik_mm * 5))
+        lc_ref = _colored_line(ax, seg, d, vmin=vmin, vmax=max(15, payi_esik_mm * 5))
         crit_mask = d < payi_esik_mm
         if crit_mask.any():
             crit_points.append(seg[crit_mask])
@@ -434,7 +480,7 @@ def plot_critical_lines(scan_segments, contour_segments, payi_esik_mm,
 
     if lc_ref is not None:
         cbar = plt.colorbar(lc_ref, ax=ax)
-        cbar.set_label('Mesafe (mm)')
+        cbar.set_label('Mesafe (mm)' + (' (- = disarida)' if signed else ''))
     ax.plot([], [], '-', color='red', linewidth=2,
             label=f'{crit_word} < {payi_esik_mm:.1f}mm (kritik)')
 
@@ -442,8 +488,7 @@ def plot_critical_lines(scan_segments, contour_segments, payi_esik_mm,
 
     # annotate minimum of each critical cluster (by scan segment, then by
     # contiguous run along that segment)
-    for seg in scan_segments:
-        d, _ = tree.query(seg)
+    for seg, d in zip(scan_segments, d_per_seg):
         idx = np.where(d < payi_esik_mm)[0]
         if len(idx) == 0:
             continue
@@ -485,7 +530,7 @@ def plot_critical_lines(scan_segments, contour_segments, payi_esik_mm,
 
 import numpy as np
 
-def export_result_dxf_lines(path, scan_segments, contour_segments, payi_esik_mm, extra_texts=None, layers=None):
+def export_result_dxf_lines(path, scan_segments, contour_segments, payi_esik_mm, extra_texts=None, layers=None, signed=False):
     """Write a genuinely R12 (AC1009) compatible DXF -- uses classic
     POLYLINE/VERTEX/SEQEND. This is the most broadly compatible
     combination (tested working in AutoCAD 2026)."""
@@ -494,8 +539,7 @@ def export_result_dxf_lines(path, scan_segments, contour_segments, payi_esik_mm,
          'label': 'PAY_ETIKET', 'info': 'OLCUM_BILGISI'}
     if layers:
         L.update(layers)
-    all_contour_pts = np.vstack(contour_segments)
-    tree = cKDTree(all_contour_pts)
+    dist = make_dist_fn(contour_segments, signed)
 
     lines = []
     lines.append("0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n0\nENDSEC")
@@ -519,7 +563,7 @@ def export_result_dxf_lines(path, scan_segments, contour_segments, payi_esik_mm,
         add_polyline(seg, 8, L['contour'])
 
     for seg in scan_segments:
-        d, _ = tree.query(seg)
+        d = dist(seg)
         ok = d >= payi_esik_mm
 
         def runs(mask):
@@ -571,8 +615,8 @@ def export_result_dxf_lines(path, scan_segments, contour_segments, payi_esik_mm,
 
 def _build_combined(scn3_state, scn9_state, scn12_state, payi_esik_mm, common_dy, contour_segments,
                     contour_label='Islenmis parca', crit_word='Pay',
-                    title_text='Birlestirilmis: SCN3 (sol) / SCN9+SCN12 (sag)'):
-    tree = cKDTree(np.vstack(contour_segments))
+                    title_text='Birlestirilmis: SCN3 (sol) / SCN9+SCN12 (sag)', signed=False):
+    dist = make_dist_fn(contour_segments, signed)
 
     def with_common_y(state, take_slice):
         # o taramanin kendi paneldeki dy'sini cikarip, ortak dy'yi uygular
@@ -592,17 +636,19 @@ def _build_combined(scn3_state, scn9_state, scn12_state, payi_esik_mm, common_dy
 
     all_d = []
     lc_ref = None
-    for seg in scn3_left + scn9_right + scn12_right:
-        d, _ = tree.query(seg)
+    all_segs_c = scn3_left + scn9_right + scn12_right
+    d_cache = [dist(seg) for seg in all_segs_c]
+    vmin = min(0.0, min((d.min() for d in d_cache), default=0.0)) if signed else 0
+    for seg, d in zip(all_segs_c, d_cache):
         all_d.append(d)
-        lc_ref = _colored_line(ax, seg, d, vmax=max(15, payi_esik_mm * 5))
+        lc_ref = _colored_line(ax, seg, d, vmin=vmin, vmax=max(15, payi_esik_mm * 5))
 
     if lc_ref is not None:
         cbar = plt.colorbar(lc_ref, ax=ax)
-        cbar.set_label('Mesafe (mm)')
+        cbar.set_label('Mesafe (mm)' + (' (- = disarida)' if signed else ''))
 
     for seg in scn3_left:
-        d, _ = tree.query(seg)
+        d = dist(seg)
         crit_mask = d < payi_esik_mm
         if crit_mask.any():
             ax.plot(seg[crit_mask, 0], seg[crit_mask, 1], '.', color='red', markersize=6)
@@ -625,7 +671,7 @@ def _build_combined(scn3_state, scn9_state, scn12_state, payi_esik_mm, common_dy
 
     right_pts, right_d = [], []
     for seg in scn9_right + scn12_right:
-        d, _ = tree.query(seg)
+        d = dist(seg)
         crit_mask = d < payi_esik_mm
         if crit_mask.any():
             ax.plot(seg[crit_mask, 0], seg[crit_mask, 1], '.', color='red', markersize=6)
@@ -688,7 +734,7 @@ MODES = {
         dxf_label='Islenmis parca DXF dosyasi', median_word='Medyan sapma',
         thr_label='Payi esigi (mm)', file_prefix='', file_stem='talasli_imalat_payi',
         combined_title='Birlestirilmis: SCN3 (sol) / SCN9+SCN12 (sag)',
-        combined_file='SCN3_SCN9_SCN12_birlestirilmis.dxf', layers=None),
+        combined_file='SCN3_SCN9_SCN12_birlestirilmis.dxf', layers=None, signed=False),
     'cnc': dict(
         tab='CNC Calisma Alani', title='CNC calisma alani kontrolu',
         contour_label='CNC calisma alani', crit_word='Bosluk', ref_short='CNC alani',
@@ -697,7 +743,7 @@ MODES = {
         combined_title='CNC alani -- Birlestirilmis: SCN3 (sol) / SCN9+SCN12 (sag)',
         combined_file='CNC_SCN3_SCN9_SCN12_birlestirilmis.dxf',
         layers=dict(contour='CNC_ALAN', ok='BOSLUK_YETERLI', crit='BOSLUK_KRITIK',
-                    label='BOSLUK_ETIKET', info='OLCUM_BILGISI')),
+                    label='BOSLUK_ETIKET', info='OLCUM_BILGISI'), signed=True),
 }
 
 # Gradio arayuzunun kendi ici durumu (pipeline calisinca doldurulur)
@@ -795,7 +841,7 @@ def gr_draw_scan(mode, scn, dx, dy, dr, thr):
         segs, M['contour_segments'], thr,
         title=f"{scn} -- {cfg['title']} (x={dx:+.2f}, y={dy:+.2f}, r={dr:+.2f})",
         contour_label=cfg['contour_label'], crit_word=cfg['crit_word'],
-        ref_short=cfg['ref_short'])
+        ref_short=cfg['ref_short'], signed=cfg['signed'])
     min_y_c = np.vstack(M['contour_segments'])[:, 1].min()
     min_y_s = np.vstack(segs)[:, 1].min()
     alt_uc = min_y_s - min_y_c
@@ -804,6 +850,9 @@ def gr_draw_scan(mode, scn, dx, dy, dr, thr):
     info = (f"{cfg['median_word']}: {np.median(d_all):.2f} mm\n"
             f"{thr}mm esiginin altinda: {int((d_all < thr).sum())} / {len(d_all)} nokta\n"
             f"Alt uc farki (tarama-{cfg['ref_short']}): {alt_uc:+.2f} mm")
+    if cfg['signed']:
+        info += (f"\nDisarida (mesafe < 0): {int((d_all < 0).sum())} nokta, "
+                 f"en kotu {d_all.min():+.2f} mm")
     return fig, info
 
 
@@ -821,7 +870,8 @@ def gr_download_scan(mode, scn):
     extra_texts = [(all_pts[min_i, 0] + 8, all_pts[min_i, 1],
                     f"Alt uc farki: {st['alt_uc_farki']:+.2f}mm")]
     export_result_dxf_lines(out_path, st['segments'], M['contour_segments'],
-                            st['payi'], extra_texts=extra_texts, layers=cfg['layers'])
+                            st['payi'], extra_texts=extra_texts, layers=cfg['layers'],
+                            signed=cfg['signed'])
     return out_path
 
 
@@ -836,11 +886,15 @@ def gr_draw_combined(mode, common_dy, thr):
     fig, d_all, segs, alt_uc = _build_combined(
         M['states']['SCN3'], M['states']['SCN9'], M['states']['SCN12'], thr, common_dy,
         M['contour_segments'], contour_label=cfg['contour_label'],
-        crit_word=cfg['crit_word'], title_text=cfg['combined_title'])
+        crit_word=cfg['crit_word'], title_text=cfg['combined_title'],
+        signed=cfg['signed'])
     M['combined'] = {'segments': segs, 'd_all': d_all, 'payi': thr, 'alt_uc': alt_uc}
     info = (f"{cfg['median_word']}: {np.median(d_all):.2f} mm\n"
             f"{thr}mm esiginin altinda: {int((d_all < thr).sum())} / {len(d_all)} nokta\n" +
             "\n".join(f"{k} alt uc farki: {v:+.2f} mm" for k, v in alt_uc.items()))
+    if cfg['signed']:
+        info += (f"\nDisarida (mesafe < 0): {int((d_all < 0).sum())} nokta, "
+                 f"en kotu {d_all.min():+.2f} mm")
     return fig, info
 
 
@@ -861,7 +915,8 @@ def gr_download_combined(mode):
         py = all_pts[:, 1].min() - 10
         extra_texts.append((px, py, f"{k} alt uc farki: {v:+.2f}mm"))
     export_result_dxf_lines(out_path, st['segments'], M['contour_segments'],
-                            st['payi'], extra_texts=extra_texts, layers=cfg['layers'])
+                            st['payi'], extra_texts=extra_texts, layers=cfg['layers'],
+                            signed=cfg['signed'])
     return out_path
 
 
